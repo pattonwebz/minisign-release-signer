@@ -54,6 +54,25 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
 For WordPress projects, set `slug` to the plugin or theme slug users already
 recognize from downloads, update checks, or release notes.
 
+### The version is signed verbatim — match it to your verifier
+
+`version` goes into the trusted comment exactly as passed (`v1.1.1` and
+`1.1.1` are two different signed versions; both are accepted, allowed
+characters are `A-Z a-z 0-9 . _ + -`). Verifiers compare it byte-for-byte,
+so sign the same string your update pipeline reports. For WordPress flows
+that means the plugin header / `new_version` style **without** a leading
+`v` — if your tags carry one, strip it before passing:
+
+```yaml
+- name: Resolve version from tag
+  id: meta
+  run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+```
+
+Mixing prefixed and bare versions across releases also confuses
+`version_compare`-style downgrade checks (`v1.1.1` sorts *below* `1.1.0`),
+so pick one form and keep it.
+
 Multiple files are signed with the same slug/version trusted comment (one
 release, several artifacts):
 
