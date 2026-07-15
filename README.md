@@ -67,7 +67,7 @@ release, several artifacts):
 | `rekor-upload` | no | `true` | Record signatures in the Rekor transparency log |
 | `rekor-required` | no | `false` | Fail the job if a Rekor upload fails |
 | `rekor-server` | no | `https://rekor.sigstore.dev` | Rekor server URL |
-| `rekor-extra-args` | no | `''` | Extra flags passed verbatim to `rekor-cli upload` |
+| `rekor-extra-args` | no | `''` | Extra flags for `rekor-cli upload`, split on whitespace (no quoting) |
 | `minisign-version` / `minisign-sha256` | no | `0.12` / pinned | minisign release + tarball hash |
 | `rekor-cli-version` / `rekor-cli-sha256` | no | `v1.5.3` / pinned | rekor-cli release + binary hash |
 
@@ -81,6 +81,16 @@ All outputs are newline-separated lists aligned with the `files` input order.
 | `signatures` | The generated `.minisig` paths |
 | `rekor-indexes` | Rekor log index per file (empty where upload skipped/failed) |
 | `rekor-locations` | Rekor entry URL per file (empty where upload skipped/failed) |
+
+## Input safety
+
+`slug` and `version` are signed verbatim into each signature's trusted
+comment, so they are constrained to characters that cannot break the
+`key:value` token grammar a verifier parses: `slug` must match
+`[A-Za-z0-9._-]+` and `version` must match `[A-Za-z0-9._+-]+`. The action
+fails fast on anything else. All inputs are passed to the internal script via
+environment variables rather than interpolated into shell, so a value derived
+from a release tag cannot inject shell commands.
 
 ## Key management
 

@@ -94,21 +94,43 @@ runs:
   steps:
     - name: Install minisign and rekor-cli (pinned)
       shell: bash
+      # All inputs are passed through env, never interpolated into this
+      # script body: a ${{ }} expression expands as literal text before bash
+      # runs, so interpolating an attacker-influenced value (e.g. a release
+      # tag) directly into run: is a shell-injection vector.
+      env:
+        MINISIGN_VERSION: ${{ inputs.minisign-version }}
+        MINISIGN_SHA256: ${{ inputs.minisign-sha256 }}
+        REKOR_UPLOAD: ${{ inputs.rekor-upload }}
+        REKOR_CLI_VERSION: ${{ inputs.rekor-cli-version }}
+        REKOR_CLI_SHA256: ${{ inputs.rekor-cli-sha256 }}
       run: |
         set -euo pipefail
         TOOLS="${RUNNER_TEMP}/minisign-release-signer"
         mkdir -p "$TOOLS"
 
-        curl -sfLo "$TOOLS/minisign.tar.gz" \
-          "https://github.com/jedisct1/minisign/releases/download/${{ inputs.minisign-version }}/minisign-${{ inputs.minisign-version }}-linux.tar.gz"
-        echo "${{ inputs.minisign-sha256 }}  $TOOLS/minisign.tar.gz" | sha256sum -c -
-        tar xzf "$TOOLS/minisign.tar.gz" -C "$TOOLS"
-        echo "MINISIGN_BIN=$TOOLS/minisign-linux/x86_64/minisign" >> "$GITHUB_ENV"
+        arch="$(uname -m)"
+        case "$arch" in
+          x86_64|amd64) MINISIGN_ARCH="x86_64"; REKOR_ARCH="amd64" ;;
+          aarch64|arm64) MINISIGN_ARCH="aarch64"; REKOR_ARCH="arm64" ;;
+          *) echo "Unsupported runner architecture: $arch (need x86_64 or arm64)" >&2; exit 1 ;;
+        esac
 
-        if [ "${{ inputs.rekor-upload }}" = "true" ]; then
-          curl -sfLo "$TOOLS/rekor-cli" \
-            "https://github.com/sigstore/rekor/releases/download/${{ inputs.rekor-cli-version }}/rekor-cli-linux-amd64"
-          echo "${{ inputs.rekor-cli-sha256 }}  $TOOLS/rekor-cli" | sha256sum -c -
+        curl -sSfL --proto '=https' -o "$TOOLS/minisign.tar.gz" \
+          "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
+        echo "${MINISIGN_SHA256}  $TOOLS/minisign.tar.gz" | sha256sum -c -
+        tar xzf "$TOOLS/minisign.tar.gz" -C "$TOOLS"
+        echo "MINISIGN_BIN=$TOOLS/minisign-linux/${MINISIGN_ARCH}/minisign" >> "$GITHUB_ENV"
+
+        if [ "${REKOR_UPLOAD}" = "true" ]; then
+          curl -sSfL --proto '=https' -o "$TOOLS/rekor-cli" \
+            "https://github.com/sigstore/rekor/releases/download/${REKOR_CLI_VERSION}/rekor-cli-linux-${REKOR_ARCH}"
+          # The pinned hash is for amd64; only enforce it on that arch.
+          if [ "$REKOR_ARCH" = "amd64" ]; then
+            echo "${REKOR_CLI_SHA256}  $TOOLS/rekor-cli" | sha256sum -c -
+          else
+            echo "::warning::rekor-cli-sha256 pin only covers amd64; arm64 binary is not hash-pinned."
+          fi
           chmod +x "$TOOLS/rekor-cli"
           echo "REKOR_BIN=$TOOLS/rekor-cli" >> "$GITHUB_ENV"
         fi
@@ -125,6 +147,9 @@ runs:
         REKOR_SERVER: ${{ inputs.rekor-server }}
         REKOR_EXTRA_ARGS: ${{ inputs.rekor-extra-args }}
         INPUT_FILES: ${{ inputs.files }}
+        INPUT_SLUG: ${{ inputs.slug }}
+        INPUT_VERSION: ${{ inputs.version }}
+        ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         FILES=()
@@ -132,7 +157,9 @@ runs:
           [ -n "$line" ] && FILES+=( "$line" )
         done <<< "$INPUT_FILES"
 
-        "${{ github.action_path }}/scripts/sign-and-log.sh" \
-          --slug "${{ inputs.slug }}" \
-          --version "${{ inputs.version }}" \
-          "${FILES[@]}"
+        # "--" stops option parsing so a file named like a flag is never
+        # consumed as one.
+        "${ACTION_PATH}/scripts/sign-and-log.sh" \
+          --slug "$INPUT_SLUG" \
+          --version "$INPUT_VERSION" \
+          -- "${FILES[@]}"

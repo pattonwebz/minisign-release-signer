@@ -44,7 +44,12 @@ jobs:
           public-key: ${{ steps.setup.outputs.pubkey }}
           rekor-upload: 'false'
 
-      - name: Assert signatures verify and outputs align
+      - name: Assert signatures verify and all outputs align 1:1 with files
+        env:
+          OUT_FILES: ${{ steps.sign.outputs.files }}
+          OUT_SIGS: ${{ steps.sign.outputs.signatures }}
+          OUT_IDX: ${{ steps.sign.outputs.rekor-indexes }}
+          OUT_LOC: ${{ steps.sign.outputs.rekor-locations }}
         run: |
           set -euo pipefail
           test -f dist/sample-1.0.0.zip.minisig
@@ -52,9 +57,30 @@ jobs:
           ./minisign-linux/x86_64/minisign -Vm dist/sample-1.0.0.zip -p test.pub | grep -F "slug:sample version:1.0.0"
           ./minisign-linux/x86_64/minisign -Vm dist/sample-extra-1.0.0.txt -p test.pub
 
-          SIGS="${{ steps.sign.outputs.signatures }}"
-          [ "$(echo "$SIGS" | wc -l)" = "2" ]
-          echo "$SIGS" | grep -qx "dist/sample-1.0.0.zip.minisig"
+          # Every output list must have exactly one line per input file (2),
+          # including rekor-indexes/locations even though Rekor was disabled.
+          for name in FILES SIGS IDX LOC; do
+            var="OUT_$name"
+            n="$(printf '%s' "${!var}" | grep -c '' || true)"
+            [ "$n" = "2" ] || { echo "$name output has $n lines, expected 2"; exit 1; }
+          done
+          printf '%s' "$OUT_SIGS" | grep -qx "dist/sample-1.0.0.zip.minisig"
+
+      - name: Assert a slug with injection characters is rejected
+        id: badslug
+        continue-on-error: true
+        uses: ./
+        with:
+          files: dist/sample-1.0.0.zip
+          slug: 'sample version:9.9.9'
+          version: '1.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm injection slug was rejected
+        run: |
+          [ "${{ steps.badslug.outcome }}" = "failure" ]
 
       - name: Assert a wrong public key fails the action
         id: wrongkey

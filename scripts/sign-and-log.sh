@@ -22,8 +22,8 @@
 #                                 should not brick a release).
 #   REKOR_BIN                     rekor-cli binary. Default: rekor-cli.
 #   REKOR_SERVER                  Rekor server URL. Default: https://rekor.sigstore.dev.
-#   REKOR_EXTRA_ARGS              Extra flags appended verbatim to every
-#                                 `rekor-cli upload` call (whitespace-separated) —
+#   REKOR_EXTRA_ARGS              Extra flags appended to every `rekor-cli upload`
+#                                 call, split on whitespace (no quoting/escaping) —
 #                                 for any additional naming/identifier flags Rekor
 #                                 needs now or grows later.
 #
@@ -52,15 +52,27 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --slug)    SLUG="$2";    shift 2 ;;
         --version) VERSION="$2"; shift 2 ;;
+        --)        shift; FILES+=( "$@" ); break ;;
         --*) echo "Unknown option: $1" >&2; exit 2 ;;
         *)  FILES+=( "$1" ); shift ;;
     esac
 done
 
 [[ -n "$SLUG" && -n "$VERSION" ]] || { echo "Required: --slug and --version" >&2; exit 2; }
+
+# The slug and version are signed verbatim into the trusted comment, which
+# downstream verifiers parse as whitespace-separated key:value tokens. A slug
+# or version containing whitespace or a colon could inject a second slug:/
+# version: token into the signed comment and change what a verifier reads.
+# Constrain both to characters that cannot break the token grammar.
+[[ "$SLUG" =~ ^[A-Za-z0-9._-]+$ ]] || { echo "Invalid --slug '${SLUG}': allowed characters are A-Z a-z 0-9 . _ -" >&2; exit 2; }
+[[ "$VERSION" =~ ^[A-Za-z0-9._+-]+$ ]] || { echo "Invalid --version '${VERSION}': allowed characters are A-Z a-z 0-9 . _ + -" >&2; exit 2; }
+
 [[ ${#FILES[@]} -gt 0 ]] || { echo "At least one file to sign is required" >&2; exit 2; }
 for f in "${FILES[@]}"; do
     [[ -f "$f" ]] || { echo "File not found: $f" >&2; exit 2; }
+    # A newline in a path would corrupt the newline-delimited step outputs.
+    [[ "$f" != *$'\n'* ]] || { echo "File path contains a newline, which is not supported: $f" >&2; exit 2; }
 done
 [[ -n "${MINISIGN_SECRET_KEY:-}" ]] || { echo "MINISIGN_SECRET_KEY is not set" >&2; exit 2; }
 [[ -n "${MINISIGN_PUBLIC_KEY:-}" ]] || { echo "MINISIGN_PUBLIC_KEY is not set" >&2; exit 2; }
@@ -71,7 +83,10 @@ fi
 
 WORK="$(mktemp -d)"
 chmod 700 "$WORK"
-trap 'rm -rf "$WORK"' EXIT
+# Cover signal-based termination too (job cancellation on self-hosted /
+# persistent runners), not just a clean EXIT, so the decrypted key file is
+# never left behind.
+trap 'rm -rf "$WORK"' EXIT INT TERM HUP
 
 SECKEY="$WORK/minisign.key"
 touch "$SECKEY" && chmod 600 "$SECKEY"
@@ -164,16 +179,31 @@ for f in "${FILES[@]}"; do
     sign_one "$f"
     if [[ "$REKOR_UPLOAD" == "true" ]]; then
         rekor_one "$f"
+    else
+        # Keep every output array aligned 1:1 with FILES even when Rekor is
+        # skipped, so consumers can zip the lists together by index.
+        REKOR_INDEXES+=( "" )
+        REKOR_LOCATIONS+=( "" )
     fi
 done
 
-if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+emit_output() {
+    # A random delimiter can't be forged by a file path, so a file literally
+    # named like the delimiter cannot terminate the heredoc early.
+    local name="$1"; shift
+    local delim="ghadelim_${RANDOM}${RANDOM}_EOF"
     {
-        echo "files<<PWZEOF";           printf '%s\n' "${FILES[@]}";           echo "PWZEOF"
-        echo "signatures<<PWZEOF";      printf '%s\n' "${SIGNATURES[@]}";      echo "PWZEOF"
-        echo "rekor-indexes<<PWZEOF";   printf '%s\n' "${REKOR_INDEXES[@]:-}"; echo "PWZEOF"
-        echo "rekor-locations<<PWZEOF"; printf '%s\n' "${REKOR_LOCATIONS[@]:-}"; echo "PWZEOF"
+        echo "${name}<<${delim}"
+        [[ $# -gt 0 ]] && printf '%s\n' "$@"
+        echo "${delim}"
     } >> "$GITHUB_OUTPUT"
+}
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+    emit_output files           "${FILES[@]}"
+    emit_output signatures      "${SIGNATURES[@]}"
+    emit_output rekor-indexes   "${REKOR_INDEXES[@]}"
+    emit_output rekor-locations "${REKOR_LOCATIONS[@]}"
 fi
 
 echo "Done: signed ${#FILES[@]} file(s) as ${SLUG} ${VERSION}."
