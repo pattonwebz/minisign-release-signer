@@ -1,8 +1,7 @@
 name: Minisign Release Signer
 description: >-
-  Sign release files with Minisign (Ed25519), verify signatures against your
-  public key, and optionally record them in the Sigstore Rekor transparency
-  log.
+  Sign release files with Minisign, verify against your public key, and
+  optionally log to Sigstore Rekor.
 author: William Patton
 
 branding:
