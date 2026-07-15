@@ -171,8 +171,11 @@ rekor_one() {
         location="$(grep -oE 'https?://[^ ]+/api/v1/log/entries/[0-9a-f]+' <<< "$rekor_out" | head -1 || true)"
     fi
 
-    REKOR_INDEXES+=( "$index" )
-    REKOR_LOCATIONS+=( "$location" )
+    # "-" placeholder for "no entry": an empty string can't round-trip as a
+    # distinct output line (blank lines collapse), so a sentinel keeps the
+    # lists genuinely 1:1 with FILES and countable by consumers.
+    REKOR_INDEXES+=( "${index:--}" )
+    REKOR_LOCATIONS+=( "${location:--}" )
 }
 
 for f in "${FILES[@]}"; do
@@ -180,10 +183,10 @@ for f in "${FILES[@]}"; do
     if [[ "$REKOR_UPLOAD" == "true" ]]; then
         rekor_one "$f"
     else
-        # Keep every output array aligned 1:1 with FILES even when Rekor is
-        # skipped, so consumers can zip the lists together by index.
-        REKOR_INDEXES+=( "" )
-        REKOR_LOCATIONS+=( "" )
+        # Rekor skipped: still emit a placeholder row per file so every
+        # output list stays aligned 1:1 with FILES.
+        REKOR_INDEXES+=( "-" )
+        REKOR_LOCATIONS+=( "-" )
     fi
 done
 

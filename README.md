@@ -79,8 +79,8 @@ All outputs are newline-separated lists aligned with the `files` input order.
 |---|---|
 | `files` | The signed files |
 | `signatures` | The generated `.minisig` paths |
-| `rekor-indexes` | Rekor log index per file (empty where upload skipped/failed) |
-| `rekor-locations` | Rekor entry URL per file (empty where upload skipped/failed) |
+| `rekor-indexes` | Rekor log index per file (`-` where upload skipped/failed) |
+| `rekor-locations` | Rekor entry URL per file (`-` where upload skipped/failed) |
 
 ## Input safety
 
