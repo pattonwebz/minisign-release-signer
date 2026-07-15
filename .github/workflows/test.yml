@@ -72,7 +72,10 @@ jobs:
           done
           printf '%s' "$OUT_SIGS" | grep -qx "dist/sample-1.0.0.zip.minisig"
 
-      - name: Assert a slug with injection characters is rejected
+      # continue-on-error lets the job proceed past this intentional failure;
+      # the following "Confirm ..." step checks steps.<id>.outcome (the raw
+      # result) to assert the failure actually happened.
+      - name: Attempt sign with an injection slug (expected to fail)
         id: badslug
         continue-on-error: true
         uses: ./
@@ -88,7 +91,7 @@ jobs:
         run: |
           [ "${{ steps.badslug.outcome }}" = "failure" ]
 
-      - name: Assert a version with injection characters is rejected
+      - name: Attempt sign with an injection version (expected to fail)
         id: badversion
         continue-on-error: true
         uses: ./
@@ -104,7 +107,7 @@ jobs:
         run: |
           [ "${{ steps.badversion.outcome }}" = "failure" ]
 
-      - name: Assert a missing file is rejected
+      - name: Attempt sign with a missing file (expected to fail)
         id: missingfile
         continue-on-error: true
         uses: ./
@@ -120,7 +123,7 @@ jobs:
         run: |
           [ "${{ steps.missingfile.outcome }}" = "failure" ]
 
-      - name: Assert a wrong public key fails the action
+      - name: Attempt sign with a wrong public key (expected to fail)
         id: wrongkey
         continue-on-error: true
         uses: ./
@@ -178,7 +181,7 @@ jobs:
           ./minisign-linux/x86_64/minisign -Vm dist/sample-extra-1.0.0.txt -p test.pub | \
             grep -F "slug:sample version:3.0.0 label:lite"
 
-      - name: Assert a file-labels/files line-count mismatch is rejected
+      - name: Attempt sign with mismatched file-labels count (expected to fail)
         id: badlabelcount
         continue-on-error: true
         uses: ./
