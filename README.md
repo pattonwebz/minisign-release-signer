@@ -97,7 +97,7 @@ release, several artifacts):
 | `rekor-server` | no | `https://rekor.sigstore.dev` | Rekor server URL |
 | `rekor-extra-args` | no | `''` | Extra flags for `rekor-cli upload`, split on whitespace (no quoting) |
 | `minisign-version` / `minisign-sha256` | no | `0.12` / pinned | minisign release + tarball hash |
-| `rekor-cli-version` / `rekor-cli-sha256` | no | `v1.5.3` / pinned | rekor-cli release + binary hash |
+| `rekor-cli-version` / `rekor-cli-sha256` / `rekor-cli-arm64-sha256` | no | `v1.5.3` / pinned / pinned | rekor-cli release + binary hash (amd64 / arm64) |
 
 ## Outputs
 
@@ -137,6 +137,16 @@ minisign -Vm my-plugin-1.2.3.zip -P 'RWS...your public key...'
 rekor-cli search --artifact my-plugin-1.2.3.zip
 rekor-cli get --log-index <index>
 ```
+
+## Failure behavior
+
+If `rekor-required: true` and an upload fails partway through a multi-file
+`files` list, the job fails, but files already signed earlier in that run
+keep their valid, verified `<file>.minisig` on disk — the action's outputs
+are not written on failure, so downstream steps have nothing to consume, but
+anything that scans the workspace directly (mainly a concern on self-hosted
+or persistent runners, since GitHub-hosted runners discard the workspace)
+should treat job success/failure as authoritative, not `.minisig` presence.
 
 ## License
 

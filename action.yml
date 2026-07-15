@@ -73,6 +73,10 @@ inputs:
     description: Pinned sha256 of the rekor-cli linux-amd64 binary.
     required: false
     default: 'c519704f8e665c192dbf190d3ac977068d3e74163951a50b3d34972478e5bbb0'
+  rekor-cli-arm64-sha256:
+    description: Pinned sha256 of the rekor-cli linux-arm64 binary.
+    required: false
+    default: 'ed512351029db07af8ce34a8bbcbb2938e229681df74cd4ae26fed92682d0faa'
 
 outputs:
   files:
@@ -82,16 +86,17 @@ outputs:
     description: The generated .minisig signature paths, one per line, aligned with files.
     value: ${{ steps.sign.outputs.signatures }}
   rekor-indexes:
-    description: Rekor log index per file (empty lines where upload was skipped/failed).
+    description: Rekor log index per file ('-' where upload was skipped/failed).
     value: ${{ steps.sign.outputs.rekor-indexes }}
   rekor-locations:
-    description: Rekor entry URL per file (empty lines where upload was skipped/failed).
+    description: Rekor entry URL per file ('-' where upload was skipped/failed).
     value: ${{ steps.sign.outputs.rekor-locations }}
 
 runs:
   using: composite
   steps:
     - name: Install minisign and rekor-cli (pinned)
+      id: install-tools
       shell: bash
       # All inputs are passed through env, never interpolated into this
       # script body: a ${{ }} expression expands as literal text before bash
@@ -103,6 +108,7 @@ runs:
         REKOR_UPLOAD: ${{ inputs.rekor-upload }}
         REKOR_CLI_VERSION: ${{ inputs.rekor-cli-version }}
         REKOR_CLI_SHA256: ${{ inputs.rekor-cli-sha256 }}
+        REKOR_CLI_ARM64_SHA256: ${{ inputs.rekor-cli-arm64-sha256 }}
       run: |
         set -euo pipefail
         TOOLS="${RUNNER_TEMP}/minisign-release-signer"
@@ -119,25 +125,29 @@ runs:
           "https://github.com/jedisct1/minisign/releases/download/${MINISIGN_VERSION}/minisign-${MINISIGN_VERSION}-linux.tar.gz"
         echo "${MINISIGN_SHA256}  $TOOLS/minisign.tar.gz" | sha256sum -c -
         tar xzf "$TOOLS/minisign.tar.gz" -C "$TOOLS"
-        echo "MINISIGN_BIN=$TOOLS/minisign-linux/${MINISIGN_ARCH}/minisign" >> "$GITHUB_ENV"
+        # Written as a step output (not $GITHUB_ENV): $GITHUB_ENV persists for
+        # the rest of the *calling job*, not just this action, so a caller's
+        # later step could unexpectedly inherit MINISIGN_BIN/REKOR_BIN.
+        echo "minisign-bin=$TOOLS/minisign-linux/${MINISIGN_ARCH}/minisign" >> "$GITHUB_OUTPUT"
 
         if [ "${REKOR_UPLOAD}" = "true" ]; then
           curl -sSfL --proto '=https' -o "$TOOLS/rekor-cli" \
             "https://github.com/sigstore/rekor/releases/download/${REKOR_CLI_VERSION}/rekor-cli-linux-${REKOR_ARCH}"
-          # The pinned hash is for amd64; only enforce it on that arch.
           if [ "$REKOR_ARCH" = "amd64" ]; then
             echo "${REKOR_CLI_SHA256}  $TOOLS/rekor-cli" | sha256sum -c -
           else
-            echo "::warning::rekor-cli-sha256 pin only covers amd64; arm64 binary is not hash-pinned."
+            echo "${REKOR_CLI_ARM64_SHA256}  $TOOLS/rekor-cli" | sha256sum -c -
           fi
           chmod +x "$TOOLS/rekor-cli"
-          echo "REKOR_BIN=$TOOLS/rekor-cli" >> "$GITHUB_ENV"
+          echo "rekor-bin=$TOOLS/rekor-cli" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Sign, verify, and log
       id: sign
       shell: bash
       env:
+        MINISIGN_BIN: ${{ steps.install-tools.outputs.minisign-bin }}
+        REKOR_BIN: ${{ steps.install-tools.outputs.rekor-bin }}
         MINISIGN_SECRET_KEY: ${{ inputs.secret-key }}
         MINISIGN_SECRET_KEY_PASSWORD: ${{ inputs.secret-key-password }}
         MINISIGN_PUBLIC_KEY: ${{ inputs.public-key }}

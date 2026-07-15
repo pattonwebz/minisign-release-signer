@@ -1,6 +1,9 @@
 # Self-test: generates a throwaway keypair, signs sample files with the
-# action, and checks signatures + outputs. Rekor upload is disabled so test
-# runs don't write junk entries to the public transparency log.
+# action, and checks signatures + outputs. Rekor upload against the action
+# itself is disabled so test runs don't write junk entries to the public
+# transparency log; the Rekor-upload code path (fresh entry, already-exists
+# re-run, and a required-upload failure) is instead exercised offline by
+# calling scripts/sign-and-log.sh directly against a fake rekor-cli.
 name: Test action
 
 on:
@@ -14,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Generate throwaway keypair and sample files
+      - name: Generate throwaway keypairs and sample files
         id: setup
         run: |
           set -euo pipefail
@@ -23,12 +26,15 @@ jobs:
           echo "9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73  minisign.tar.gz" | sha256sum -c -
           tar xzf minisign.tar.gz
           ./minisign-linux/x86_64/minisign -G -f -W -p test.pub -s test.sec
+          ./minisign-linux/x86_64/minisign -G -f -p enc-test.pub -s enc-test.sec <<< $'test-password\ntest-password'
           mkdir -p dist
           echo "artifact one" > dist/sample-1.0.0.zip
           echo "artifact two" > dist/sample-extra-1.0.0.txt
           {
             echo "seckey<<EOF"; cat test.sec; echo "EOF"
             echo "pubkey<<EOF"; cat test.pub; echo "EOF"
+            echo "encseckey<<EOF"; cat enc-test.sec; echo "EOF"
+            echo "encpubkey<<EOF"; cat enc-test.pub; echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
       - name: Run the action (Rekor disabled)
@@ -82,6 +88,38 @@ jobs:
         run: |
           [ "${{ steps.badslug.outcome }}" = "failure" ]
 
+      - name: Assert a version with injection characters is rejected
+        id: badversion
+        continue-on-error: true
+        uses: ./
+        with:
+          files: dist/sample-1.0.0.zip
+          slug: sample
+          version: '1.0.0 slug:other'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm injection version was rejected
+        run: |
+          [ "${{ steps.badversion.outcome }}" = "failure" ]
+
+      - name: Assert a missing file is rejected
+        id: missingfile
+        continue-on-error: true
+        uses: ./
+        with:
+          files: dist/does-not-exist.zip
+          slug: sample
+          version: '1.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm missing-file run failed
+        run: |
+          [ "${{ steps.missingfile.outcome }}" = "failure" ]
+
       - name: Assert a wrong public key fails the action
         id: wrongkey
         continue-on-error: true
@@ -97,3 +135,110 @@ jobs:
       - name: Confirm wrong-key run failed
         run: |
           [ "${{ steps.wrongkey.outcome }}" = "failure" ]
+
+      - name: Assert a password-protected secret key signs successfully
+        id: encsign
+        uses: ./
+        with:
+          files: dist/sample-1.0.0.zip
+          slug: sample
+          version: '2.0.0'
+          secret-key: ${{ steps.setup.outputs.encseckey }}
+          secret-key-password: test-password
+          public-key: ${{ steps.setup.outputs.encpubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm the encrypted-key signature verifies
+        run: |
+          set -euo pipefail
+          ./minisign-linux/x86_64/minisign -Vm dist/sample-1.0.0.zip -x dist/sample-1.0.0.zip.minisig -p enc-test.pub | \
+            grep -F "slug:sample version:2.0.0"
+
+      - name: Set up a fake rekor-cli for offline Rekor-path tests
+        run: |
+          cat > fake-rekor-cli <<'FAKE_REKOR_EOF'
+          #!/usr/bin/env bash
+          # Minimal stand-in for rekor-cli that never touches the network,
+          # used to exercise scripts/sign-and-log.sh's Rekor-upload parsing
+          # (fresh entry, already-exists re-run, and upload failure) without
+          # writing to the real public transparency log.
+          set -euo pipefail
+          FAKE_INDEX=42
+          FAKE_UUID="deadbeefcafefeed0000000000000000000000000000000000000000000000"
+          FAKE_LOCATION="https://fake.example.test/api/v1/log/entries/${FAKE_UUID}"
+
+          case "${1:-}" in
+            upload)
+              if [[ "${FAKE_REKOR_FAIL:-0}" == "1" ]]; then
+                echo "simulated upload failure" >&2
+                exit 1
+              fi
+              if [[ -f "${FAKE_REKOR_STATE:?FAKE_REKOR_STATE not set}" ]]; then
+                echo "Entry already exists; available at: ${FAKE_LOCATION}"
+              else
+                : > "${FAKE_REKOR_STATE}"
+                echo "Created entry at index ${FAKE_INDEX}, available at: ${FAKE_LOCATION}"
+              fi
+              ;;
+            get)
+              echo "Index: ${FAKE_INDEX}"
+              echo "UUID: ${FAKE_UUID}"
+              ;;
+            *)
+              echo "fake-rekor-cli: unsupported subcommand '${1:-}'" >&2
+              exit 2
+              ;;
+          esac
+          FAKE_REKOR_EOF
+          chmod +x fake-rekor-cli
+
+      - name: Exercise a fresh Rekor upload and index/location parsing
+        run: |
+          set -euo pipefail
+          cp dist/sample-1.0.0.zip rekor-test.zip
+          rm -f rekor-test.zip.minisig rekor-state
+          export MINISIGN_BIN="$PWD/minisign-linux/x86_64/minisign"
+          export REKOR_BIN="$PWD/fake-rekor-cli"
+          export FAKE_REKOR_STATE="$PWD/rekor-state"
+          export MINISIGN_SECRET_KEY="$(cat test.sec)"
+          export MINISIGN_PUBLIC_KEY="$(cat test.pub)"
+          export REKOR_UPLOAD=true
+          export GITHUB_OUTPUT="$PWD/rekor-out-fresh.txt"
+          : > "$GITHUB_OUTPUT"
+          ./scripts/sign-and-log.sh --slug rekor-fake --version 1.0.0 -- rekor-test.zip
+          grep -A1 '^rekor-indexes<<' "$GITHUB_OUTPUT" | tail -1 | grep -qx '42'
+          grep -A1 '^rekor-locations<<' "$GITHUB_OUTPUT" | tail -1 | grep -q 'deadbeefcafefeed'
+
+      - name: Exercise an already-exists re-upload recovers its index via `rekor-cli get`
+        run: |
+          set -euo pipefail
+          export MINISIGN_BIN="$PWD/minisign-linux/x86_64/minisign"
+          export REKOR_BIN="$PWD/fake-rekor-cli"
+          export FAKE_REKOR_STATE="$PWD/rekor-state"
+          export MINISIGN_SECRET_KEY="$(cat test.sec)"
+          export MINISIGN_PUBLIC_KEY="$(cat test.pub)"
+          export REKOR_UPLOAD=true
+          export GITHUB_OUTPUT="$PWD/rekor-out-exists.txt"
+          : > "$GITHUB_OUTPUT"
+          # rekor-state already exists from the previous step, so fake-rekor-cli
+          # now takes the "already exists" branch (no Index in its text output).
+          test -f rekor-state
+          ./scripts/sign-and-log.sh --slug rekor-fake --version 1.0.0 -- rekor-test.zip
+          grep -A1 '^rekor-indexes<<' "$GITHUB_OUTPUT" | tail -1 | grep -qx '42'
+
+      - name: Exercise rekor-required=true failing a job on upload failure
+        run: |
+          set -euo pipefail
+          export MINISIGN_BIN="$PWD/minisign-linux/x86_64/minisign"
+          export REKOR_BIN="$PWD/fake-rekor-cli"
+          export FAKE_REKOR_STATE="$PWD/rekor-state"
+          export FAKE_REKOR_FAIL=1
+          export MINISIGN_SECRET_KEY="$(cat test.sec)"
+          export MINISIGN_PUBLIC_KEY="$(cat test.pub)"
+          export REKOR_UPLOAD=true
+          export REKOR_REQUIRED=true
+          set +e
+          ./scripts/sign-and-log.sh --slug rekor-fake --version 3.0.0 -- rekor-test.zip
+          status=$?
+          set -e
+          [ "$status" -ne 0 ] || { echo "expected failure when REKOR_REQUIRED=true and the upload fails"; exit 1; }

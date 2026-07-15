@@ -4,7 +4,10 @@
 # record them in the Sigstore Rekor transparency log.
 #
 # Usage:
-#   sign-and-log.sh --slug my-plugin --version 1.2.3 <file> [<file> ...]
+#   sign-and-log.sh --slug my-plugin --version 1.2.3 -- <file> [<file> ...]
+#
+# The "--" before the file list is required: without it, a file named like a
+# flag (e.g. "--changelog.txt") is parsed as an unknown option and rejected.
 #
 # Each <file> gets a detached signature written next to it as <file>.minisig.
 # The files themselves are not modified.
@@ -41,6 +44,24 @@ REKOR_BIN="${REKOR_BIN:-rekor-cli}"
 REKOR_UPLOAD="${REKOR_UPLOAD:-true}"
 REKOR_REQUIRED="${REKOR_REQUIRED:-false}"
 REKOR_SERVER="${REKOR_SERVER:-https://rekor.sigstore.dev}"
+
+# Booleans are compared with exact string equality below, so a
+# non-canonical spelling (e.g. "True", "1", "yes") would otherwise silently
+# behave like "false" with no diagnostic — most dangerous for
+# REKOR_REQUIRED, where a user expecting a hard release gate would instead
+# get silent warn-and-continue.
+for _var in REKOR_UPLOAD REKOR_REQUIRED; do
+    _val="${!_var}"
+    [[ "$_val" == "true" || "$_val" == "false" ]] || {
+        echo "Invalid ${_var} '${_val}': must be exactly 'true' or 'false'" >&2
+        exit 2
+    }
+done
+unset _var _val
+
+if [[ "$REKOR_REQUIRED" == "true" && "$REKOR_UPLOAD" != "true" ]]; then
+    echo "::warning::rekor-required is true but rekor-upload is false; rekor-required has no effect since no upload is attempted."
+fi
 REKOR_EXTRA=()
 if [[ -n "${REKOR_EXTRA_ARGS:-}" ]]; then
     read -ra REKOR_EXTRA <<< "$REKOR_EXTRA_ARGS"
@@ -94,11 +115,24 @@ printf '%s\n' "$MINISIGN_SECRET_KEY" > "$SECKEY"
 
 # Normalise the public key to a real .pub file: both minisign -p and
 # rekor-cli's minisign PKI parser want the two-line file form.
+#
+# Trailing newlines (and any stray CR from a Windows-edited secret) are
+# stripped before checking for embedded newlines: a bare base64 key with
+# one accidental trailing "\n" or "\r\n" (e.g. from `gh variable set NAME
+# < file`) must still be classified as "bare", or the required "untrusted
+# comment:" header line never gets written and minisign fails to parse the
+# resulting file.
+MINISIGN_PUBLIC_KEY_TRIMMED="$MINISIGN_PUBLIC_KEY"
+while [[ "$MINISIGN_PUBLIC_KEY_TRIMMED" == *$'\n' || "$MINISIGN_PUBLIC_KEY_TRIMMED" == *$'\r' ]]; do
+    MINISIGN_PUBLIC_KEY_TRIMMED="${MINISIGN_PUBLIC_KEY_TRIMMED%$'\n'}"
+    MINISIGN_PUBLIC_KEY_TRIMMED="${MINISIGN_PUBLIC_KEY_TRIMMED%$'\r'}"
+done
+
 PUBKEY_FILE="$WORK/minisign.pub"
-if [[ "$MINISIGN_PUBLIC_KEY" == *$'\n'* || "$MINISIGN_PUBLIC_KEY" == untrusted* ]]; then
-    printf '%s\n' "$MINISIGN_PUBLIC_KEY" > "$PUBKEY_FILE"
+if [[ "$MINISIGN_PUBLIC_KEY_TRIMMED" == *$'\n'* || "$MINISIGN_PUBLIC_KEY_TRIMMED" == untrusted* ]]; then
+    printf '%s\n' "$MINISIGN_PUBLIC_KEY_TRIMMED" > "$PUBKEY_FILE"
 else
-    printf 'untrusted comment: minisign public key\n%s\n' "$MINISIGN_PUBLIC_KEY" > "$PUBKEY_FILE"
+    printf 'untrusted comment: minisign public key\n%s\n' "$MINISIGN_PUBLIC_KEY_TRIMMED" > "$PUBKEY_FILE"
 fi
 
 TRUSTED_COMMENT="slug:${SLUG} version:${VERSION} signed:$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -159,7 +193,11 @@ rekor_one() {
     echo "$rekor_out"
 
     # An identical entry from a re-run job already being in the log is
-    # success, not failure.
+    # success, not failure. As of rekor-cli v1.5.3 this case actually exits
+    # 0 (with an "Entry already exists" message), so the "already exists"
+    # check below never has to override a nonzero status in practice — it's
+    # kept as a defensive fallback in case a future/older rekor-cli treats a
+    # duplicate entry as an error instead.
     if [[ $rekor_status -ne 0 && "$rekor_out" != *"already exists"* ]]; then
         if [[ "$REKOR_REQUIRED" == "true" ]]; then
             echo "Rekor upload failed for ${file} and REKOR_REQUIRED=true." >&2
@@ -167,8 +205,19 @@ rekor_one() {
         fi
         echo "::warning::Rekor upload failed for ${file}; continuing because REKOR_REQUIRED=false."
     else
-        index="$(grep -oE 'index [0-9]+' <<< "$rekor_out" | grep -oE '[0-9]+' | head -1 || true)"
+        index="$(grep -oiE 'index:? [0-9]+' <<< "$rekor_out" | grep -oE '[0-9]+' | head -1 || true)"
         location="$(grep -oE 'https?://[^ ]+/api/v1/log/entries/[0-9a-f]+' <<< "$rekor_out" | head -1 || true)"
+
+        # rekor-cli's "already exists" upload response carries a Location
+        # but omits the Index (it's a real field on the entry, just not
+        # printed for that case). Look it up by UUID so a re-run of an
+        # already-logged file still reports its index instead of "-".
+        if [[ -z "$index" && -n "$location" ]]; then
+            local uuid get_out
+            uuid="${location##*/}"
+            get_out="$("$REKOR_BIN" get --uuid "$uuid" --rekor_server "$REKOR_SERVER" 2>&1 || true)"
+            index="$(grep -oiE 'index:? [0-9]+' <<< "$get_out" | grep -oE '[0-9]+' | head -1 || true)"
+        fi
     fi
 
     # "-" placeholder for "no entry": an empty string can't round-trip as a
