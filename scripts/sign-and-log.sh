@@ -29,14 +29,27 @@
 #                                 call, split on whitespace (no quoting/escaping) —
 #                                 for any additional naming/identifier flags Rekor
 #                                 needs now or grows later.
+#   FILE_LABELS                   Optional per-file label, one per line, positionally
+#                                 aligned with the file list (blank line = no label
+#                                 for that file). Signed into that file's trusted
+#                                 comment as label:<label>. Omit entirely for no
+#                                 labels at all. A single trailing newline is
+#                                 tolerated (e.g. from a YAML `|` block scalar) and
+#                                 does not count as an extra blank entry; any other
+#                                 line-count mismatch against the file list is an error.
 #
 # Outputs (written to $GITHUB_OUTPUT when set), newline-separated and aligned
 # with the input file order: files, signatures, rekor-indexes, rekor-locations.
 #
-# The trusted comment binds the plugin slug and version into every signature
-# (covered by minisign's global signature), preventing replay of a
-# validly-signed file of another plugin or an older version:
-#   slug:<slug> version:<version> signed:<utc timestamp>
+# The trusted comment binds the plugin slug and version — and, if given, a
+# per-file label — into every signature (covered by minisign's global
+# signature), preventing replay of a validly-signed file of another
+# plugin/version/variant:
+#   slug:<slug> version:<version>[ label:<label>] signed:<utc timestamp>
+#
+# The signed:<timestamp> is computed once and shared by every file in a run,
+# so files signed together in the same invocation are identifiably part of
+# one release moment even when their label differs.
 set -euo pipefail
 
 MINISIGN_BIN="${MINISIGN_BIN:-minisign}"
@@ -95,6 +108,35 @@ for f in "${FILES[@]}"; do
     # A newline in a path would corrupt the newline-delimited step outputs.
     [[ "$f" != *$'\n'* ]] || { echo "File path contains a newline, which is not supported: $f" >&2; exit 2; }
 done
+
+# FILE_LABELS is positionally aligned with FILES, so blank lines are
+# meaningful (they mean "no label") and must be preserved rather than
+# filtered like INPUT_FILES's blank lines are. A single trailing newline is
+# stripped first because a YAML `|` block scalar always ends in exactly one
+# "\n" that isn't part of the user's data — without stripping it, a
+# herestring split would read it as one extra trailing blank entry and
+# every run with a plain trailing newline (the common case) would fail the
+# line-count check below.
+FILE_LABELS="${FILE_LABELS:-}"
+FILE_LABELS="${FILE_LABELS%$'\n'}"
+LABELS=()
+if [[ -n "$FILE_LABELS" ]]; then
+    while IFS= read -r line; do
+        LABELS+=( "$line" )
+    done <<< "$FILE_LABELS"
+    [[ ${#LABELS[@]} -eq ${#FILES[@]} ]] || {
+        echo "file-labels has ${#LABELS[@]} line(s), expected ${#FILES[@]} (one per file in 'files', blank = no label)" >&2
+        exit 2
+    }
+    for i in "${!LABELS[@]}"; do
+        label="${LABELS[$i]}"
+        [[ -z "$label" || "$label" =~ ^[A-Za-z0-9._-]+$ ]] || {
+            echo "Invalid label '${label}' for file '${FILES[$i]}': allowed characters are A-Z a-z 0-9 . _ -" >&2
+            exit 2
+        }
+    done
+fi
+
 [[ -n "${MINISIGN_SECRET_KEY:-}" ]] || { echo "MINISIGN_SECRET_KEY is not set" >&2; exit 2; }
 [[ -n "${MINISIGN_PUBLIC_KEY:-}" ]] || { echo "MINISIGN_PUBLIC_KEY is not set" >&2; exit 2; }
 command -v "$MINISIGN_BIN" >/dev/null || { echo "minisign binary not found: $MINISIGN_BIN" >&2; exit 2; }
@@ -135,26 +177,30 @@ else
     printf 'untrusted comment: minisign public key\n%s\n' "$MINISIGN_PUBLIC_KEY_TRIMMED" > "$PUBKEY_FILE"
 fi
 
-TRUSTED_COMMENT="slug:${SLUG} version:${VERSION} signed:$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# Shared by every file in this run (see the header comment for why).
+SIGNED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 SIGNATURES=()
 REKOR_INDEXES=()
 REKOR_LOCATIONS=()
 
 sign_one() {
-    local file="$1"
+    local file="$1" label="$2"
     local sig="${file}.minisig"
+    local trusted_comment="slug:${SLUG} version:${VERSION}"
+    [[ -n "$label" ]] && trusted_comment+=" label:${label}"
+    trusted_comment+=" signed:${SIGNED_AT}"
 
-    echo "Signing ${file} (${TRUSTED_COMMENT})"
+    echo "Signing ${file} (${trusted_comment})"
 
     if [[ -n "${MINISIGN_SECRET_KEY_PASSWORD:-}" ]]; then
         printf '%s\n' "$MINISIGN_SECRET_KEY_PASSWORD" | "$MINISIGN_BIN" -S \
             -s "$SECKEY" -m "$file" -x "$sig" \
-            -t "$TRUSTED_COMMENT" -c "signature for ${SLUG} ${VERSION}"
+            -t "$trusted_comment" -c "signature for ${SLUG} ${VERSION}"
     else
         "$MINISIGN_BIN" -S \
             -s "$SECKEY" -m "$file" -x "$sig" \
-            -t "$TRUSTED_COMMENT" -c "signature for ${SLUG} ${VERSION}" < /dev/null
+            -t "$trusted_comment" -c "signature for ${SLUG} ${VERSION}" < /dev/null
     fi
 
     # Belt and braces: verify what was just produced against the *public* key
@@ -163,7 +209,7 @@ sign_one() {
     verify_out="$("$MINISIGN_BIN" -Vm "$file" -x "$sig" -p "$PUBKEY_FILE")"
     echo "$verify_out"
 
-    if ! grep -qF "Trusted comment: ${TRUSTED_COMMENT}" <<< "$verify_out"; then
+    if ! grep -qF "Trusted comment: ${trusted_comment}" <<< "$verify_out"; then
         echo "Post-sign verification of ${file} did not return the expected trusted comment." >&2
         exit 1
     fi
@@ -227,8 +273,9 @@ rekor_one() {
     REKOR_LOCATIONS+=( "${location:--}" )
 }
 
-for f in "${FILES[@]}"; do
-    sign_one "$f"
+for i in "${!FILES[@]}"; do
+    f="${FILES[$i]}"
+    sign_one "$f" "${LABELS[$i]:-}"
     if [[ "$REKOR_UPLOAD" == "true" ]]; then
         rekor_one "$f"
     else

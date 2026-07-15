@@ -19,6 +19,15 @@ inputs:
   slug:
     description: Project/plugin slug, signed into the trusted comment of every signature.
     required: true
+  file-labels:
+    description: >-
+      Optional per-file label, one per line, positionally aligned with
+      `files` (blank line = no label for that file). Signed into that
+      file's trusted comment as label:<label> — use to distinguish
+      multiple artifacts signed in the same run (e.g. build variants).
+      Leave empty to omit labels entirely.
+    required: false
+    default: ''
   version:
     description: Release version, signed into the trusted comment of every signature.
     required: true
@@ -155,6 +164,7 @@ runs:
         REKOR_REQUIRED: ${{ inputs.rekor-required }}
         REKOR_SERVER: ${{ inputs.rekor-server }}
         REKOR_EXTRA_ARGS: ${{ inputs.rekor-extra-args }}
+        FILE_LABELS: ${{ inputs.file-labels }}
         INPUT_FILES: ${{ inputs.files }}
         INPUT_SLUG: ${{ inputs.slug }}
         INPUT_VERSION: ${{ inputs.version }}

@@ -154,6 +154,49 @@ jobs:
           ./minisign-linux/x86_64/minisign -Vm dist/sample-1.0.0.zip -x dist/sample-1.0.0.zip.minisig -p enc-test.pub | \
             grep -F "slug:sample version:2.0.0"
 
+      - name: Assert per-file labels land in the right file's trusted comment
+        id: labeled
+        uses: ./
+        with:
+          files: |
+            dist/sample-1.0.0.zip
+            dist/sample-extra-1.0.0.txt
+          file-labels: |
+            full
+            lite
+          slug: sample
+          version: '3.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm labels are positionally correct and don't cross files
+        run: |
+          set -euo pipefail
+          ./minisign-linux/x86_64/minisign -Vm dist/sample-1.0.0.zip -p test.pub | \
+            grep -F "slug:sample version:3.0.0 label:full"
+          ./minisign-linux/x86_64/minisign -Vm dist/sample-extra-1.0.0.txt -p test.pub | \
+            grep -F "slug:sample version:3.0.0 label:lite"
+
+      - name: Assert a file-labels/files line-count mismatch is rejected
+        id: badlabelcount
+        continue-on-error: true
+        uses: ./
+        with:
+          files: |
+            dist/sample-1.0.0.zip
+            dist/sample-extra-1.0.0.txt
+          file-labels: full
+          slug: sample
+          version: '1.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Confirm mismatched file-labels count was rejected
+        run: |
+          [ "${{ steps.badlabelcount.outcome }}" = "failure" ]
+
       - name: Set up a fake rekor-cli for offline Rekor-path tests
         run: |
           cat > fake-rekor-cli <<'FAKE_REKOR_EOF'

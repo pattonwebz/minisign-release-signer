@@ -13,9 +13,9 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
 - **Detached signatures**: each input file gets a `<file>.minisig` next to
   it; the files themselves are untouched.
 - **Replay protection**: every signature embeds a trusted comment
-  (`slug:<slug> version:<version> signed:<utc>`) covered by minisign's global
-  signature, so a valid signature for one project/version can't be replayed
-  as another.
+  (`slug:<slug> version:<version> signed:<utc>`, optionally with a per-file
+  `label:<label>`) covered by minisign's global signature, so a valid
+  signature for one project/version/variant can't be replayed as another.
 - **Self-verifying**: the action verifies its own output against the public
   key you distribute to users, and fails the job on any mismatch — a wrong
   key pair fails the release, not your users' installs.
@@ -82,11 +82,42 @@ release, several artifacts):
       dist/my-plugin-docs-1.2.3.pdf
 ```
 
+### Distinguishing multiple artifacts with `file-labels`
+
+If a release produces more than one meaningfully different build — e.g. a
+full and a lite variant, or per-architecture bundles — give each one its own
+`label:<label>` token via `file-labels`, one line per entry in `files`,
+positionally aligned (a blank line means "no label" for that file):
+
+```yaml
+    files: |
+      dist/my-plugin-full-1.2.3.zip
+      dist/my-plugin-lite-1.2.3.zip
+    file-labels: |
+      full
+      lite
+```
+
+`slug`, `version`, and the `signed:<utc>` timestamp stay identical across
+every file in the run (they're one release, signed together); only the
+`label:` token varies per file. `file-labels` must have exactly one line per
+file in `files` when set at all — a mismatched count fails the job rather
+than guessing which label belongs to which file. Labels are constrained to
+the same charset as `slug` (`[A-Za-z0-9._-]+`) for the same trusted-comment
+injection reasons — see [Input safety](#input-safety).
+
+Adding `label:` tokens changes the trusted comment's shape for any consumer
+that parses it strictly by token position or count rather than by
+`key:value` lookup — if you have such a verifier downstream, update it
+before relying on labels, or leave `file-labels` unset to keep today's
+comment format unchanged.
+
 ## Inputs
 
 | Input | Required | Default | Description |
 |---|---|---|---|
 | `files` | yes | — | File(s) to sign, one path per line |
+| `file-labels` | no | `''` | Optional per-file `label:<label>`, one per line, aligned with `files` |
 | `slug` | yes | — | Project slug, signed into every trusted comment |
 | `version` | yes | — | Release version, signed into every trusted comment |
 | `secret-key` | yes | — | Contents of the minisign secret key file (use a secret) |
@@ -112,13 +143,14 @@ All outputs are newline-separated lists aligned with the `files` input order.
 
 ## Input safety
 
-`slug` and `version` are signed verbatim into each signature's trusted
-comment, so they are constrained to characters that cannot break the
-`key:value` token grammar a verifier parses: `slug` must match
-`[A-Za-z0-9._-]+` and `version` must match `[A-Za-z0-9._+-]+`. The action
-fails fast on anything else. All inputs are passed to the internal script via
-environment variables rather than interpolated into shell, so a value derived
-from a release tag cannot inject shell commands.
+`slug`, `version`, and any per-file `file-labels` entry are signed verbatim
+into each signature's trusted comment, so they are constrained to characters
+that cannot break the `key:value` token grammar a verifier parses: `slug`
+and each label must match `[A-Za-z0-9._-]+`, `version` must match
+`[A-Za-z0-9._+-]+`. The action fails fast on anything else. All inputs are
+passed to the internal script via environment variables rather than
+interpolated into shell, so a value derived from a release tag cannot inject
+shell commands.
 
 ## Key management
 
