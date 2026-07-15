@@ -1,0 +1,73 @@
+# Self-test: generates a throwaway keypair, signs sample files with the
+# action, and checks signatures + outputs. Rekor upload is disabled so test
+# runs don't write junk entries to the public transparency log.
+name: Test action
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate throwaway keypair and sample files
+        id: setup
+        run: |
+          set -euo pipefail
+          curl -sfLo minisign.tar.gz \
+            https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz
+          echo "9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73  minisign.tar.gz" | sha256sum -c -
+          tar xzf minisign.tar.gz
+          ./minisign-linux/x86_64/minisign -G -f -W -p test.pub -s test.sec
+          mkdir -p dist
+          echo "artifact one" > dist/sample-1.0.0.zip
+          echo "artifact two" > dist/sample-extra-1.0.0.txt
+          {
+            echo "seckey<<EOF"; cat test.sec; echo "EOF"
+            echo "pubkey<<EOF"; cat test.pub; echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run the action (Rekor disabled)
+        id: sign
+        uses: ./
+        with:
+          files: |
+            dist/sample-1.0.0.zip
+            dist/sample-extra-1.0.0.txt
+          slug: sample
+          version: '1.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: ${{ steps.setup.outputs.pubkey }}
+          rekor-upload: 'false'
+
+      - name: Assert signatures verify and outputs align
+        run: |
+          set -euo pipefail
+          test -f dist/sample-1.0.0.zip.minisig
+          test -f dist/sample-extra-1.0.0.txt.minisig
+          ./minisign-linux/x86_64/minisign -Vm dist/sample-1.0.0.zip -p test.pub | grep -F "slug:sample version:1.0.0"
+          ./minisign-linux/x86_64/minisign -Vm dist/sample-extra-1.0.0.txt -p test.pub
+
+          SIGS="${{ steps.sign.outputs.signatures }}"
+          [ "$(echo "$SIGS" | wc -l)" = "2" ]
+          echo "$SIGS" | grep -qx "dist/sample-1.0.0.zip.minisig"
+
+      - name: Assert a wrong public key fails the action
+        id: wrongkey
+        continue-on-error: true
+        uses: ./
+        with:
+          files: dist/sample-1.0.0.zip
+          slug: sample
+          version: '1.0.0'
+          secret-key: ${{ steps.setup.outputs.seckey }}
+          public-key: 'RWS4jWZECaPIox2F79BWPheYPwkuB6cNr0UPKUQDmjhF52dY8KDeVN+t'
+          rekor-upload: 'false'
+
+      - name: Confirm wrong-key run failed
+        run: |
+          [ "${{ steps.wrongkey.outcome }}" = "failure" ]

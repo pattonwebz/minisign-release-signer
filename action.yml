@@ -1,0 +1,138 @@
+name: Minisign Release Signer
+description: >-
+  Sign release files with minisign (Ed25519), verify every signature against
+  your published public key, and record them in the Sigstore Rekor
+  transparency log. Signatures embed a trusted comment binding the release
+  slug and version, preventing signature replay across projects or versions.
+author: William Patton
+
+branding:
+  icon: edit-3
+  color: purple
+
+inputs:
+  files:
+    description: >-
+      File(s) to sign, one path per line. Each gets a detached signature
+      written next to it as <file>.minisig; the files themselves are not
+      modified.
+    required: true
+  slug:
+    description: Project/plugin slug, signed into the trusted comment of every signature.
+    required: true
+  version:
+    description: Release version, signed into the trusted comment of every signature.
+    required: true
+  secret-key:
+    description: Contents of the minisign secret key file. Pass a repo/org secret.
+    required: true
+  secret-key-password:
+    description: Password for the secret key (pass a separate secret). Leave empty for unencrypted keys.
+    required: false
+    default: ''
+  public-key:
+    description: >-
+      The minisign public key the signatures will be verified against (bare
+      base64 line or full minisign.pub contents). The action fails if its own
+      output does not verify against this key.
+    required: true
+  rekor-upload:
+    description: Record each signature in the Rekor transparency log.
+    required: false
+    default: 'true'
+  rekor-required:
+    description: >-
+      Fail the job if a Rekor upload fails. Default false: Rekor being
+      unreachable warns but does not block the release.
+    required: false
+    default: 'false'
+  rekor-server:
+    description: Rekor server URL.
+    required: false
+    default: 'https://rekor.sigstore.dev'
+  rekor-extra-args:
+    description: >-
+      Extra flags appended verbatim to every `rekor-cli upload` call
+      (whitespace-separated) — use for any additional naming or identifier
+      flags Rekor needs. The release slug/version are already recorded in the
+      log via the signature's trusted comment.
+    required: false
+    default: ''
+  minisign-version:
+    description: minisign release to download.
+    required: false
+    default: '0.12'
+  minisign-sha256:
+    description: Pinned sha256 of the minisign linux release tarball.
+    required: false
+    default: '9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73'
+  rekor-cli-version:
+    description: rekor-cli release to download.
+    required: false
+    default: 'v1.5.3'
+  rekor-cli-sha256:
+    description: Pinned sha256 of the rekor-cli linux-amd64 binary.
+    required: false
+    default: 'c519704f8e665c192dbf190d3ac977068d3e74163951a50b3d34972478e5bbb0'
+
+outputs:
+  files:
+    description: The signed files, one per line (same order as the input).
+    value: ${{ steps.sign.outputs.files }}
+  signatures:
+    description: The generated .minisig signature paths, one per line, aligned with files.
+    value: ${{ steps.sign.outputs.signatures }}
+  rekor-indexes:
+    description: Rekor log index per file (empty lines where upload was skipped/failed).
+    value: ${{ steps.sign.outputs.rekor-indexes }}
+  rekor-locations:
+    description: Rekor entry URL per file (empty lines where upload was skipped/failed).
+    value: ${{ steps.sign.outputs.rekor-locations }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install minisign and rekor-cli (pinned)
+      shell: bash
+      run: |
+        set -euo pipefail
+        TOOLS="${RUNNER_TEMP}/minisign-release-signer"
+        mkdir -p "$TOOLS"
+
+        curl -sfLo "$TOOLS/minisign.tar.gz" \
+          "https://github.com/jedisct1/minisign/releases/download/${{ inputs.minisign-version }}/minisign-${{ inputs.minisign-version }}-linux.tar.gz"
+        echo "${{ inputs.minisign-sha256 }}  $TOOLS/minisign.tar.gz" | sha256sum -c -
+        tar xzf "$TOOLS/minisign.tar.gz" -C "$TOOLS"
+        echo "MINISIGN_BIN=$TOOLS/minisign-linux/x86_64/minisign" >> "$GITHUB_ENV"
+
+        if [ "${{ inputs.rekor-upload }}" = "true" ]; then
+          curl -sfLo "$TOOLS/rekor-cli" \
+            "https://github.com/sigstore/rekor/releases/download/${{ inputs.rekor-cli-version }}/rekor-cli-linux-amd64"
+          echo "${{ inputs.rekor-cli-sha256 }}  $TOOLS/rekor-cli" | sha256sum -c -
+          chmod +x "$TOOLS/rekor-cli"
+          echo "REKOR_BIN=$TOOLS/rekor-cli" >> "$GITHUB_ENV"
+        fi
+
+    - name: Sign, verify, and log
+      id: sign
+      shell: bash
+      env:
+        MINISIGN_SECRET_KEY: ${{ inputs.secret-key }}
+        MINISIGN_SECRET_KEY_PASSWORD: ${{ inputs.secret-key-password }}
+        MINISIGN_PUBLIC_KEY: ${{ inputs.public-key }}
+        REKOR_UPLOAD: ${{ inputs.rekor-upload }}
+        REKOR_REQUIRED: ${{ inputs.rekor-required }}
+        REKOR_SERVER: ${{ inputs.rekor-server }}
+        REKOR_EXTRA_ARGS: ${{ inputs.rekor-extra-args }}
+        INPUT_FILES: ${{ inputs.files }}
+      run: |
+        set -euo pipefail
+        FILES=()
+        while IFS= read -r line; do
+          [ -n "$line" ] && FILES+=( "$line" )
+        done <<< "$INPUT_FILES"
+
+        "${{ github.action_path }}/scripts/sign-and-log.sh" \
+          --slug "${{ inputs.slug }}" \
+          --version "${{ inputs.version }}" \
+          "${FILES[@]}"
