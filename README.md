@@ -6,6 +6,9 @@ succeeding, and records each signature in the
 [Sigstore Rekor](https://docs.sigstore.dev/logging/overview/) public
 transparency log.
 
+Built for WordPress plugin and theme releases, but suitable for any
+distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
+
 - **Detached signatures**: each input file gets a `<file>.minisig` next to
   it; the files themselves are untouched.
 - **Replay protection**: every signature embeds a trusted comment
