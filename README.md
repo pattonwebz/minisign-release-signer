@@ -1,12 +1,13 @@
 # Minisign Release Signer
 
-A GitHub Action that signs release files with [minisign](https://jedisct1.github.io/minisign/)
-(Ed25519), verifies every signature against your published public key before
-succeeding, and records each signature in the
+Sign WordPress plugin, theme, and other release artifacts with
+[Minisign](https://jedisct1.github.io/minisign/) (Ed25519). The action creates
+detached signatures, verifies them against your published public key before
+succeeding, and can record each signature in the
 [Sigstore Rekor](https://docs.sigstore.dev/logging/overview/) public
 transparency log.
 
-Built for WordPress plugin and theme releases, but suitable for any
+It is built for WordPress release workflows, but it is generic enough for any
 distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
 
 - **Detached signatures**: each input file gets a `<file>.minisig` next to
@@ -24,7 +25,9 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
 - **Pinned tooling**: minisign and rekor-cli are downloaded from their
   official releases and checked against pinned sha256 hashes.
 
-## Usage
+## Quick start
+
+### WordPress plugin release example
 
 ```yaml
 - name: Sign release
@@ -47,6 +50,9 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
       dist/*.zip
       dist/*.minisig
 ```
+
+For WordPress projects, set `slug` to the plugin or theme slug users already
+recognize from downloads, update checks, or release notes.
 
 Multiple files are signed with the same slug/version trusted comment (one
 release, several artifacts):
