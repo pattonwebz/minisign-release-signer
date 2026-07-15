@@ -29,7 +29,7 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
 ```yaml
 - name: Sign release
   id: sign
-  uses: pattonwebz/sign-release-action@v1
+  uses: pattonwebz/minisign-release-signer@v1
   with:
     files: |
       dist/my-plugin-1.2.3.zip

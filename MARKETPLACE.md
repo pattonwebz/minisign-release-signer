@@ -22,14 +22,15 @@ A GitHub Action for signing release artifacts with Minisign. It creates detached
 
 ## Repository name recommendation
 
-Keep the repository name as `sign-release-action` for now.
+Rename the repository to `minisign-release-signer`.
 
 Why:
 
-- The Marketplace title users see is already `Minisign Release Signer`
-- The current repository name is accurate and serviceable
-- Renaming the repository would change the `uses:` path for consumers
-- The current repo name only appears in the README usage example, so a rename is optional rather than necessary
+- It aligns the repository path with the Marketplace title users will see
+- It makes the `uses:` path more descriptive and memorable
+- This project has not been publicly released yet, so the migration cost is low
+- The new name is available and avoids confusion with other Marketplace listings
 
-If you rename before the first public release, `minisign-release-signer` is the cleanest tighter-alignment option. If you do that later, update the `uses:` examples in `README.md` and any published release notes.
+After the rename, use `pattonwebz/minisign-release-signer@v1` in workflow examples and release notes.
+
 
