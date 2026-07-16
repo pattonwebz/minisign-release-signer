@@ -172,6 +172,9 @@ runs:
         set -euo pipefail
         FILES=()
         while IFS= read -r line; do
+          # Strip a trailing CR so a CRLF-edited workflow file's multiline
+          # `files:` block doesn't leave "path\r" entries that fail -f checks.
+          line="${line%$'\r'}"
           [ -n "$line" ] && FILES+=( "$line" )
         done <<< "$INPUT_FILES"
 

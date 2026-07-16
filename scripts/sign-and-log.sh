@@ -119,9 +119,15 @@ done
 # line-count check below.
 FILE_LABELS="${FILE_LABELS:-}"
 FILE_LABELS="${FILE_LABELS%$'\n'}"
+FILE_LABELS="${FILE_LABELS%$'\r'}"
 LABELS=()
 if [[ -n "$FILE_LABELS" ]]; then
     while IFS= read -r line; do
+        # Strip a trailing CR so a CRLF-edited workflow file's multiline
+        # `file-labels:` block doesn't leave "label\r" entries (blank
+        # lines are meaningful here, so this must run before anything
+        # else touches $line).
+        line="${line%$'\r'}"
         LABELS+=( "$line" )
     done <<< "$FILE_LABELS"
     [[ ${#LABELS[@]} -eq ${#FILES[@]} ]] || {
