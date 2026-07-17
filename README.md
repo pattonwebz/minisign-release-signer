@@ -14,8 +14,13 @@ distributable artifact such as ZIPs, tarballs, binaries, packages, and docs.
   it; the files themselves are untouched.
 - **Replay protection**: every signature embeds a trusted comment
   (`slug:<slug> version:<version> signed:<utc>`, optionally with a per-file
-  `label:<label>`) covered by minisign's global signature, so a valid
-  signature for one project/version/variant can't be replayed as another.
+  `label:<label>`) covered by minisign's global signature. The `slug` and
+  `version` are what a verifier binds against, so a valid signature for one
+  project or version can't be replayed as another. The `label` is
+  identification metadata — signed, but not a security boundary a verifier
+  is expected to enforce: give artifacts that must not be interchangeable
+  distinct slugs rather than relying on the label to separate same-version
+  variants.
 - **Self-verifying**: the action verifies its own output against the public
   key you distribute to users, and fails the job on any mismatch — a wrong
   key pair fails the release, not your users' installs.
